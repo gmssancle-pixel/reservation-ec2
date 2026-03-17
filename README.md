@@ -9,8 +9,9 @@ Complete web app to manage shared-space reservations in a residence.
 - reservation creation with field validation
 - maximum reservation duration: 4 hours
 - automatic overlap prevention for same space/date
-- reservation list filtered by space and date
-- reservation cancellation restricted to owner (cancellation code + room number + full name)
+- existing reservations list shows all active (not expired) bookings
+- user-defined cancellation PIN (4-8 digits)
+- reservation cancellation restricted to owner (cancellation PIN + room number + full name)
 - local JSON data persistence
 
 ## Requirements
@@ -46,7 +47,9 @@ Open `http://localhost:3000/reservation` in your browser.
 
 - `GET /reservation/api/spaces`
 - `GET /reservation/api/reservations?spaceId=...&date=YYYY-MM-DD`
+  - supports `activeOnly=true` to return only active reservations
 - `POST /reservation/api/reservations`
+  - requires `cancellationPin` (4-8 digits)
   - rejects reservations longer than 4 hours
 - `DELETE /reservation/api/reservations/:id`
-  - requires `cancellationCode`, `roomNumber`, `residentName`
+  - requires `cancellationPin`, `roomNumber`, `residentName`

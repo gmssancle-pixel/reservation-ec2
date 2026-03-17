@@ -5,6 +5,7 @@ const startTimeInput = document.getElementById("startTime");
 const endTimeInput = document.getElementById("endTime");
 const residentNameInput = document.getElementById("residentName");
 const roomNumberInput = document.getElementById("roomNumber");
+const cancellationPinInput = document.getElementById("cancellationPin");
 const noteInput = document.getElementById("note");
 const formMessage = document.getElementById("form-message");
 const listMessage = document.getElementById("list-message");
@@ -13,6 +14,7 @@ const refreshBtn = document.getElementById("refresh-btn");
 
 const BASE_PATH = "/reservation";
 const MAX_RESERVATION_MINUTES = 4 * 60;
+const PIN_PATTERN = /^\d{4,8}$/;
 let spaces = [];
 
 function setMessage(element, text, type = "info") {
@@ -131,15 +133,8 @@ async function loadSpaces() {
 }
 
 async function loadReservations() {
-  if (!spaceSelect.value || !dateInput.value) {
-    reservationsList.innerHTML = "";
-    setMessage(listMessage, "Select a space and date to view reservations.", "info");
-    return;
-  }
-
   const params = new URLSearchParams({
-    spaceId: spaceSelect.value,
-    date: dateInput.value
+    activeOnly: "true"
   });
 
   const reservations = await apiRequest(`${BASE_PATH}/api/reservations?${params.toString()}`);
@@ -157,6 +152,7 @@ async function handleBookingSubmit(event) {
     endTime: endTimeInput.value,
     residentName: residentNameInput.value,
     roomNumber: roomNumberInput.value,
+    cancellationPin: cancellationPinInput.value,
     note: noteInput.value
   };
 
@@ -173,6 +169,11 @@ async function handleBookingSubmit(event) {
     return;
   }
 
+  if (!PIN_PATTERN.test(payload.cancellationPin)) {
+    setMessage(formMessage, "Cancellation PIN must be 4 to 8 digits.", "error");
+    return;
+  }
+
   try {
     const result = await apiRequest(`${BASE_PATH}/api/reservations`, {
       method: "POST",
@@ -181,12 +182,13 @@ async function handleBookingSubmit(event) {
 
     setMessage(
       formMessage,
-      `Reservation confirmed. ID: ${result.reservation.id} | Cancellation code: ${result.reservation.cancellationCode}`,
+      `Reservation confirmed. ID: ${result.reservation.id}. Keep your cancellation PIN safe.`,
       "success"
     );
 
     startTimeInput.value = "";
     endTimeInput.value = "";
+    cancellationPinInput.value = "";
     noteInput.value = "";
 
     await loadReservations();
@@ -202,9 +204,14 @@ async function handleReservationCancel(event) {
   }
 
   const reservationId = button.dataset.id;
-  const cancellationCode = window.prompt("Enter the cancellation code to confirm:");
+  const cancellationPin = window.prompt("Enter your cancellation PIN:");
 
-  if (!cancellationCode) {
+  if (!cancellationPin) {
+    return;
+  }
+
+  if (!PIN_PATTERN.test(cancellationPin)) {
+    setMessage(formMessage, "Cancellation PIN must be 4 to 8 digits.", "error");
     return;
   }
 
@@ -222,7 +229,7 @@ async function handleReservationCancel(event) {
     await apiRequest(`${BASE_PATH}/api/reservations/${reservationId}`, {
       method: "DELETE",
       body: JSON.stringify({
-        cancellationCode,
+        cancellationPin,
         roomNumber,
         residentName
       })

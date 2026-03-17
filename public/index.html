@@ -50,6 +50,11 @@
               <input id="roomNumber" type="text" required maxlength="20" />
             </label>
 
+            <label>
+              Cancellation PIN (4-8 digits)
+              <input id="cancellationPin" type="password" required inputmode="numeric" pattern="[0-9]{4,8}" minlength="4" maxlength="8" />
+            </label>
+
             <label class="full-width">
               Note (optional)
               <textarea id="note" rows="3" maxlength="250"></textarea>
@@ -67,8 +72,8 @@
           <button id="refresh-btn" type="button" class="ghost-btn">Refresh</button>
         </div>
 
-        <p class="hint">The list shows reservations for the selected space and date.</p>
-        <p class="hint">Only the owner can cancel a reservation using matching full name, room number and cancellation code.</p>
+        <p class="hint">The list shows all active reservations (not expired yet).</p>
+        <p class="hint">Only the owner can cancel a reservation using matching full name, room number and cancellation PIN.</p>
 
         <ul id="reservations-list" class="reservations-list"></ul>
         <p id="list-message" class="message"></p>

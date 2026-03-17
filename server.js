@@ -15,6 +15,7 @@ const RESERVATIONS_FILE = path.join(DATA_DIR, "reservations.json");
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const TIME_PATTERN = /^\d{2}:\d{2}$/;
+const PIN_PATTERN = /^\d{4,8}$/;
 const MAX_RESERVATION_MINUTES = 4 * 60;
 
 let writeQueue = Promise.resolve();
@@ -101,7 +102,7 @@ function isValidTime(value) {
 }
 
 function toPublicReservation(reservation) {
-  const { cancellationCode, ...publicReservation } = reservation;
+  const { cancellationCode, cancellationPinHash, ...publicReservation } = reservation;
   return publicReservation;
 }
 
@@ -123,6 +124,29 @@ function hasAvailabilityWindow(space) {
 
 function sameText(first, second) {
   return normalizeString(first).toLowerCase() === normalizeString(second).toLowerCase();
+}
+
+function hashText(value) {
+  return crypto.createHash("sha256").update(value).digest("hex");
+}
+
+function getReservationEndDate(reservation) {
+  if (!isValidDate(reservation.date) || !isValidTime(reservation.endTime)) {
+    return null;
+  }
+
+  const [year, month, day] = reservation.date.split("-").map(Number);
+  const [hours, minutes] = reservation.endTime.split(":").map(Number);
+  return new Date(year, month - 1, day, hours, minutes, 0, 0);
+}
+
+function isActiveReservation(reservation, now = new Date()) {
+  const reservationEnd = getReservationEndDate(reservation);
+  if (!reservationEnd) {
+    return false;
+  }
+
+  return reservationEnd.getTime() >= now.getTime();
 }
 
 app.use(express.json());
@@ -149,6 +173,7 @@ app.get(`${APP_BASE_PATH}/api/spaces`, async (_req, res, next) => {
 
 app.get(`${APP_BASE_PATH}/api/reservations`, async (req, res, next) => {
   try {
+    const activeOnly = normalizeString(req.query.activeOnly).toLowerCase() === "true";
     const filters = {
       spaceId: normalizeString(req.query.spaceId),
       date: normalizeString(req.query.date),
@@ -171,6 +196,10 @@ app.get(`${APP_BASE_PATH}/api/reservations`, async (req, res, next) => {
       ));
     }
 
+    if (activeOnly) {
+      reservations = reservations.filter((item) => isActiveReservation(item));
+    }
+
     res.json(sortReservations(reservations).map(toPublicReservation));
   } catch (error) {
     next(error);
@@ -186,6 +215,7 @@ app.post(`${APP_BASE_PATH}/api/reservations`, async (req, res, next) => {
       endTime: normalizeString(req.body.endTime),
       residentName: normalizeString(req.body.residentName),
       roomNumber: normalizeString(req.body.roomNumber),
+      cancellationPin: normalizeString(req.body.cancellationPin),
       note: normalizeString(req.body.note)
     };
 
@@ -195,7 +225,8 @@ app.post(`${APP_BASE_PATH}/api/reservations`, async (req, res, next) => {
       ["startTime", payload.startTime],
       ["endTime", payload.endTime],
       ["residentName", payload.residentName],
-      ["roomNumber", payload.roomNumber]
+      ["roomNumber", payload.roomNumber],
+      ["cancellationPin", payload.cancellationPin]
     ];
 
     const missingField = requiredFields.find(([, value]) => !value);
@@ -220,6 +251,10 @@ app.post(`${APP_BASE_PATH}/api/reservations`, async (req, res, next) => {
 
     if ((endMinutes - startMinutes) > MAX_RESERVATION_MINUTES) {
       return res.status(400).json({ error: "A reservation cannot be longer than 4 hours." });
+    }
+
+    if (!PIN_PATTERN.test(payload.cancellationPin)) {
+      return res.status(400).json({ error: "Cancellation PIN must be 4 to 8 digits." });
     }
 
     const spaces = await readJson(SPACES_FILE, defaultSpaces);
@@ -269,7 +304,7 @@ app.post(`${APP_BASE_PATH}/api/reservations`, async (req, res, next) => {
         residentName: payload.residentName,
         roomNumber: payload.roomNumber,
         note: payload.note,
-        cancellationCode: crypto.randomBytes(3).toString("hex").toUpperCase(),
+        cancellationPinHash: hashText(payload.cancellationPin),
         createdAt: new Date().toISOString()
       };
 
@@ -291,7 +326,7 @@ app.post(`${APP_BASE_PATH}/api/reservations`, async (req, res, next) => {
 app.delete(`${APP_BASE_PATH}/api/reservations/:id`, async (req, res, next) => {
   try {
     const reservationId = normalizeString(req.params.id);
-    const cancellationCode = normalizeString(req.body.cancellationCode).toUpperCase();
+    const cancellationPin = normalizeString(req.body.cancellationPin);
     const roomNumber = normalizeString(req.body.roomNumber);
     const residentName = normalizeString(req.body.residentName);
 
@@ -299,8 +334,12 @@ app.delete(`${APP_BASE_PATH}/api/reservations/:id`, async (req, res, next) => {
       return res.status(400).json({ error: "Invalid reservation ID." });
     }
 
-    if (!cancellationCode) {
-      return res.status(400).json({ error: "Cancellation code is required." });
+    if (!cancellationPin) {
+      return res.status(400).json({ error: "Cancellation PIN is required." });
+    }
+
+    if (!PIN_PATTERN.test(cancellationPin)) {
+      return res.status(400).json({ error: "Cancellation PIN must be 4 to 8 digits." });
     }
 
     if (!roomNumber) {
@@ -321,8 +360,8 @@ app.delete(`${APP_BASE_PATH}/api/reservations/:id`, async (req, res, next) => {
         throw notFound;
       }
 
-      if (reservations[index].cancellationCode !== cancellationCode) {
-        const unauthorized = new Error("Wrong cancellation code.");
+      if (reservations[index].cancellationPinHash !== hashText(cancellationPin)) {
+        const unauthorized = new Error("Wrong cancellation PIN.");
         unauthorized.status = 401;
         throw unauthorized;
       }
