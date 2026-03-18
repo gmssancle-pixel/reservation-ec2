@@ -12,62 +12,57 @@ Complete web app to manage shared-space reservations in a residence.
 - existing reservations list shows all active (not expired) bookings
 - user-defined cancellation PIN (4-8 digits)
 - reservation cancellation restricted to owner (cancellation PIN + room number + full name)
-- PostgreSQL persistence (Render-ready)
+- local JSON persistence (no database required)
 
 ## Requirements
 
 - Node.js 18 or newer
 - npm
-- PostgreSQL database
-- `DATABASE_URL` environment variable
-
-## Render setup
-
-1. Create a PostgreSQL database on Render.
-2. Copy the **Internal Database URL**.
-3. In your Web Service, set env var:
-   - `DATABASE_URL=<your-internal-database-url>`
-4. Deploy the service.
-
-The app auto-creates tables and seeds spaces (`TV Room`, `Music Room`) on startup.
-
-## AWS Amplify Hosting setup (Express / web compute)
-
-1. Push this repository to GitHub (including `amplify.yml` and `deploy-manifest.json`).
-2. In Amplify, create a new app from the repository.
-3. In Amplify app settings, set env var:
-   - `DATABASE_URL=<your-postgres-url>`
-4. Deploy.
-
-Important:
-- the Amplify build uses Node.js 22 (`amplify.yml`)
-- the output bundle is generated in `.amplify-hosting`
-- app URL must include `/reservation`
 
 ## Local quick start
 
 ```bash
 cd /Users/gms/residenza-prenotazioni
 npm install
-export DATABASE_URL="postgres://USER:PASSWORD@HOST:PORT/DBNAME"
 npm run dev
 ```
 
 Open `http://localhost:3000/reservation` in your browser.
 
+## Data persistence
+
+Data is stored locally in:
+
+- `data/spaces.json`
+- `data/reservations.json`
+
+No `DATABASE_URL` is needed.
+
+## AWS Amplify Hosting setup (Express / web compute)
+
+1. Push this repository to GitHub (including `amplify.yml` and `deploy-manifest.json`).
+2. In Amplify, create a new app from the repository.
+3. Deploy.
+
+Important:
+
+- the Amplify build uses Node.js 22 (`amplify.yml`)
+- the output bundle is generated in `.amplify-hosting`
+- app URL must include `/reservation`
+
 ## Available scripts
 
 - `npm start`: start server
 - `npm run dev`: start in watch mode
-- `npm run reset-data`: reset reservations and reseed spaces in PostgreSQL
+- `npm run reset-data`: reset reservations and reseed local JSON data
 
 ## Structure
 
 - `server.js`: backend API + frontend static hosting
 - `public/`: web UI (`index.html`, `styles.css`, `app.js`)
-- `scripts/reset-data.js`: reset seed data in DB
+- `scripts/reset-data.js`: reset JSON data
 - `lib/default-data.js`: default space dataset
-- `lib/database.js`: PostgreSQL connection, schema init and seed logic
+- `lib/file-store.js`: local JSON read/write helpers
 
 ## Main API routes
 

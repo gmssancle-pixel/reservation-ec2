@@ -1,15 +1,12 @@
-const { pool, resetDatabaseData } = require("../lib/database");
+const { resetFileStore } = require("../lib/file-store");
 
 async function resetData() {
-  await resetDatabaseData();
-  console.log("Database reset completed.");
+  await resetFileStore();
+  console.log("Data reset completed.");
 }
 
 resetData()
   .catch((error) => {
-    console.error("Error while resetting database:", error);
+    console.error("Error while resetting data:", error);
     process.exitCode = 1;
-  })
-  .finally(async () => {
-    await pool.end();
   });
