@@ -17,8 +17,34 @@ const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const TIME_PATTERN = /^\d{2}:\d{2}$/;
 const PIN_PATTERN = /^\d{4,8}$/;
 const MAX_RESERVATION_MINUTES = 4 * 60;
+const MAX_BOOKING_DAYS_AHEAD = 30;
+const DEFAULT_CLEANUP_TIMEZONE = "Europe/Rome";
+const CLEANUP_CHECK_INTERVAL_MS = 60 * 1000;
+
+function resolveCleanupTimeZone(candidate) {
+  try {
+    new Intl.DateTimeFormat("en-CA", {
+      timeZone: candidate,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit"
+    }).format(new Date());
+    return candidate;
+  } catch (_error) {
+    console.warn(
+      `[cleanup] Invalid APP_TIMEZONE "${candidate}". `
+      + `Using ${DEFAULT_CLEANUP_TIMEZONE}.`
+    );
+    return DEFAULT_CLEANUP_TIMEZONE;
+  }
+}
+
+const CLEANUP_TIMEZONE = resolveCleanupTimeZone(
+  process.env.APP_TIMEZONE || DEFAULT_CLEANUP_TIMEZONE
+);
 
 let mutationQueue = Promise.resolve();
+let lastObservedCleanupDate = null;
 
 function withMutationLock(task) {
   const run = mutationQueue.then(task, task);
@@ -82,6 +108,71 @@ function sameText(first, second) {
 
 function hashText(value) {
   return crypto.createHash("sha256").update(value).digest("hex");
+}
+
+function getCurrentDateInTimeZone(timeZone) {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).format(new Date());
+}
+
+function addDaysToISODate(dateValue, daysToAdd) {
+  const [year, month, day] = dateValue.split("-").map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  date.setUTCDate(date.getUTCDate() + daysToAdd);
+  return date.toISOString().slice(0, 10);
+}
+
+function toUTCDateMs(dateValue) {
+  if (!isValidDate(dateValue)) {
+    return Number.NaN;
+  }
+
+  const [year, month, day] = dateValue.split("-").map(Number);
+  return Date.UTC(year, month - 1, day);
+}
+
+async function cleanupReservationsBefore(dateThreshold) {
+  return withMutationLock(async () => {
+    const reservations = await loadReservations();
+    const thresholdMs = toUTCDateMs(dateThreshold);
+    const filteredReservations = reservations.filter(
+      (reservation) => {
+        const reservationDateMs = toUTCDateMs(reservation.date);
+        return Number.isFinite(reservationDateMs) && reservationDateMs >= thresholdMs;
+      }
+    );
+    const removedCount = reservations.length - filteredReservations.length;
+
+    if (removedCount > 0) {
+      await saveReservations(filteredReservations);
+    }
+
+    return removedCount;
+  });
+}
+
+function startDailyCleanupScheduler() {
+  setInterval(async () => {
+    try {
+      const today = getCurrentDateInTimeZone(CLEANUP_TIMEZONE);
+      if (today === lastObservedCleanupDate) {
+        return;
+      }
+
+      lastObservedCleanupDate = today;
+      const removedCount = await cleanupReservationsBefore(today);
+      console.log(
+        `[cleanup] Day rollover (${CLEANUP_TIMEZONE}). `
+        + `Removed ${removedCount} reservation(s) older than ${today}.`
+      );
+    } catch (error) {
+      console.error("[cleanup] Scheduled cleanup failed:", error);
+    }
+  }, CLEANUP_CHECK_INTERVAL_MS);
 }
 
 function isReservationActive(reservation, nowMs) {
@@ -196,6 +287,18 @@ app.post(`${APP_BASE_PATH}/api/reservations`, async (req, res, next) => {
 
     if (!isValidDate(payload.date)) {
       return res.status(400).json({ error: "Invalid date. Use YYYY-MM-DD format." });
+    }
+
+    const today = getCurrentDateInTimeZone(CLEANUP_TIMEZONE);
+    const maxBookingDate = addDaysToISODate(today, MAX_BOOKING_DAYS_AHEAD);
+    const selectedDateMs = toUTCDateMs(payload.date);
+    const todayMs = toUTCDateMs(today);
+    const maxBookingDateMs = toUTCDateMs(maxBookingDate);
+
+    if (selectedDateMs < todayMs || selectedDateMs > maxBookingDateMs) {
+      return res.status(400).json({
+        error: `Date must be between ${today} and ${maxBookingDate}.`
+      });
     }
 
     if (!isValidTime(payload.startTime) || !isValidTime(payload.endTime)) {
@@ -352,9 +455,18 @@ app.use((error, _req, res, _next) => {
 });
 
 initializeFileStore()
-  .then(() => {
+  .then(async () => {
+    const today = getCurrentDateInTimeZone(CLEANUP_TIMEZONE);
+    lastObservedCleanupDate = today;
+    const removedCount = await cleanupReservationsBefore(today);
+    console.log(
+      `[cleanup] Startup cleanup (${CLEANUP_TIMEZONE}). `
+      + `Removed ${removedCount} reservation(s) older than ${today}.`
+    );
+
     app.listen(PORT, () => {
       console.log(`Server running at http://localhost:${PORT}${APP_BASE_PATH}`);
+      startDailyCleanupScheduler();
     });
   })
   .catch((error) => {

@@ -14,6 +14,7 @@ const refreshBtn = document.getElementById("refresh-btn");
 
 const BASE_PATH = "/reservation";
 const MAX_RESERVATION_MINUTES = 4 * 60;
+const MAX_BOOKING_DAYS_AHEAD = 30;
 const PIN_PATTERN = /^\d{4,8}$/;
 let spaces = [];
 
@@ -40,6 +41,33 @@ function todayAsISO() {
   const month = String(today.getMonth() + 1).padStart(2, "0");
   const day = String(today.getDate()).padStart(2, "0");
   return `${today.getFullYear()}-${month}-${day}`;
+}
+
+function addDaysToISODate(dateValue, daysToAdd) {
+  const [year, month, day] = dateValue.split("-").map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  date.setUTCDate(date.getUTCDate() + daysToAdd);
+  return date.toISOString().slice(0, 10);
+}
+
+function toUTCDateMs(dateValue) {
+  if (!dateValue || !/^\d{4}-\d{2}-\d{2}$/.test(dateValue)) {
+    return Number.NaN;
+  }
+
+  const [year, month, day] = dateValue.split("-").map(Number);
+  return Date.UTC(year, month - 1, day);
+}
+
+function configureDateLimits() {
+  const today = todayAsISO();
+  const maxDate = addDaysToISODate(today, MAX_BOOKING_DAYS_AHEAD);
+  dateInput.min = today;
+  dateInput.max = maxDate;
+
+  if (!dateInput.value || dateInput.value < today || dateInput.value > maxDate) {
+    dateInput.value = today;
+  }
 }
 
 async function apiRequest(url, options = {}) {
@@ -174,6 +202,16 @@ async function handleBookingSubmit(event) {
     return;
   }
 
+  const minDate = dateInput.min;
+  const maxDate = dateInput.max;
+  const selectedDateMs = toUTCDateMs(payload.date);
+  const minDateMs = toUTCDateMs(minDate);
+  const maxDateMs = toUTCDateMs(maxDate);
+  if (!Number.isFinite(selectedDateMs) || selectedDateMs < minDateMs || selectedDateMs > maxDateMs) {
+    setMessage(formMessage, `Date must be between ${minDate} and ${maxDate}.`, "error");
+    return;
+  }
+
   try {
     const result = await apiRequest(`${BASE_PATH}/api/reservations`, {
       method: "POST",
@@ -243,7 +281,7 @@ async function handleReservationCancel(event) {
 }
 
 async function bootstrap() {
-  dateInput.value = todayAsISO();
+  configureDateLimits();
   setMessage(listMessage, "Loading reservations...", "info");
 
   try {

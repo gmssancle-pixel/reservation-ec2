@@ -8,11 +8,13 @@ Complete web app to manage shared-space reservations in a residence.
 - unlimited booking hours (no opening/closing time restrictions)
 - reservation creation with field validation
 - maximum reservation duration: 4 hours
+- booking window: from today up to 30 days ahead
 - automatic overlap prevention for same space/date
 - existing reservations list shows all active (not expired) bookings
 - user-defined cancellation PIN (4-8 digits)
 - reservation cancellation restricted to owner (cancellation PIN + room number + full name)
 - local JSON persistence (no database required)
+- automatic daily cleanup at midnight (removes reservations from previous dates)
 
 ## Requirements
 
@@ -37,6 +39,12 @@ Data is stored locally in:
 - `data/reservations.json`
 
 No `DATABASE_URL` is needed.
+
+Midnight cleanup:
+
+- at day rollover, all reservations with `date < today` are deleted automatically
+- default timezone: `Europe/Rome`
+- optional env var: `APP_TIMEZONE` (example: `APP_TIMEZONE=Europe/Rome`)
 
 ## AWS Amplify Hosting setup (Express / web compute)
 
@@ -71,5 +79,6 @@ Important:
 - `POST /reservation/api/reservations`
   - requires `cancellationPin` (4-8 digits)
   - rejects reservations longer than 4 hours
+  - accepts dates only in range: today ... today + 30 days
 - `DELETE /reservation/api/reservations/:id`
   - requires `cancellationPin`, `roomNumber`, `residentName`
