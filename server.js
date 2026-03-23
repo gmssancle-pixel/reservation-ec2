@@ -12,6 +12,12 @@ const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 const APP_BASE_PATH = "/reservation";
 const PUBLIC_DIR = path.join(__dirname, "public");
+const ADMIN_USERNAME = process.env.ADMIN_USERNAME || "g14nm4rc0";
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "c4st3lv3tr4n0";
+const ADMIN_SESSION_COOKIE = "reservationAdminSession";
+const ADMIN_SESSION_TTL_MS = 8 * 60 * 60 * 1000;
+const ADMIN_SESSION_SECRET = process.env.ADMIN_SESSION_SECRET
+  || crypto.createHash("sha256").update(`admin:${ADMIN_USERNAME}:${ADMIN_PASSWORD}`).digest("hex");
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const TIME_PATTERN = /^\d{2}:\d{2}$/;
@@ -110,6 +116,134 @@ function hashText(value) {
   return crypto.createHash("sha256").update(value).digest("hex");
 }
 
+function sameSecret(first, second) {
+  const firstBuffer = Buffer.from(String(first), "utf8");
+  const secondBuffer = Buffer.from(String(second), "utf8");
+
+  if (firstBuffer.length !== secondBuffer.length) {
+    return false;
+  }
+
+  return crypto.timingSafeEqual(firstBuffer, secondBuffer);
+}
+
+function parseCookies(cookieHeader) {
+  if (!cookieHeader) {
+    return {};
+  }
+
+  return cookieHeader.split(";").reduce((cookies, part) => {
+    const trimmed = part.trim();
+    const separatorIndex = trimmed.indexOf("=");
+
+    if (separatorIndex <= 0) {
+      return cookies;
+    }
+
+    const name = trimmed.slice(0, separatorIndex);
+    const value = trimmed.slice(separatorIndex + 1);
+
+    try {
+      cookies[name] = decodeURIComponent(value);
+    } catch (_error) {
+      cookies[name] = value;
+    }
+
+    return cookies;
+  }, {});
+}
+
+function serializeCookie(name, value, options = {}) {
+  const parts = [`${name}=${encodeURIComponent(value)}`];
+
+  if (options.maxAgeMs !== undefined) {
+    parts.push(`Max-Age=${Math.max(0, Math.floor(options.maxAgeMs / 1000))}`);
+  }
+
+  if (options.path) {
+    parts.push(`Path=${options.path}`);
+  }
+
+  if (options.httpOnly) {
+    parts.push("HttpOnly");
+  }
+
+  if (options.sameSite) {
+    parts.push(`SameSite=${options.sameSite}`);
+  }
+
+  return parts.join("; ");
+}
+
+function createAdminSessionToken() {
+  const expiresAt = String(Date.now() + ADMIN_SESSION_TTL_MS);
+  const signature = crypto
+    .createHmac("sha256", ADMIN_SESSION_SECRET)
+    .update(`${ADMIN_USERNAME}:${expiresAt}`)
+    .digest("hex");
+
+  return `${expiresAt}.${signature}`;
+}
+
+function isValidAdminSessionToken(token) {
+  if (!token || typeof token !== "string") {
+    return false;
+  }
+
+  const [expiresAt, signature] = token.split(".");
+  if (!expiresAt || !signature || !/^\d+$/.test(expiresAt) || !/^[a-f0-9]+$/i.test(signature)) {
+    return false;
+  }
+
+  if (Number(expiresAt) <= Date.now()) {
+    return false;
+  }
+
+  const expectedSignature = crypto
+    .createHmac("sha256", ADMIN_SESSION_SECRET)
+    .update(`${ADMIN_USERNAME}:${expiresAt}`)
+    .digest("hex");
+
+  return sameSecret(signature, expectedSignature);
+}
+
+function hasAdminSession(req) {
+  const cookies = parseCookies(req.headers.cookie);
+  return isValidAdminSessionToken(cookies[ADMIN_SESSION_COOKIE]);
+}
+
+function setAdminSessionCookie(res) {
+  res.setHeader(
+    "Set-Cookie",
+    serializeCookie(ADMIN_SESSION_COOKIE, createAdminSessionToken(), {
+      maxAgeMs: ADMIN_SESSION_TTL_MS,
+      path: APP_BASE_PATH,
+      httpOnly: true,
+      sameSite: "Strict"
+    })
+  );
+}
+
+function clearAdminSessionCookie(res) {
+  res.setHeader(
+    "Set-Cookie",
+    serializeCookie(ADMIN_SESSION_COOKIE, "", {
+      maxAgeMs: 0,
+      path: APP_BASE_PATH,
+      httpOnly: true,
+      sameSite: "Strict"
+    })
+  );
+}
+
+function requireAdminSession(req, res, next) {
+  if (!hasAdminSession(req)) {
+    return res.status(401).json({ error: "Admin authentication required." });
+  }
+
+  return next();
+}
+
 function getCurrentDateInTimeZone(timeZone) {
   return new Intl.DateTimeFormat("en-CA", {
     timeZone,
@@ -205,6 +339,49 @@ app.get(`${APP_BASE_PATH}/api/spaces`, async (_req, res, next) => {
   try {
     const spaces = await loadSpaces();
     res.json(spaces);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get(`${APP_BASE_PATH}/api/admin/session`, (req, res) => {
+  res.json({ authenticated: hasAdminSession(req) });
+});
+
+app.post(`${APP_BASE_PATH}/api/admin/login`, (req, res) => {
+  const username = normalizeString(req.body && req.body.username);
+  const password = normalizeString(req.body && req.body.password);
+
+  if (!sameSecret(username, ADMIN_USERNAME) || !sameSecret(password, ADMIN_PASSWORD)) {
+    return res.status(401).json({ error: "Invalid admin username or password." });
+  }
+
+  setAdminSessionCookie(res);
+  return res.json({ message: "Admin authenticated." });
+});
+
+app.post(`${APP_BASE_PATH}/api/admin/logout`, (_req, res) => {
+  clearAdminSessionCookie(res);
+  res.json({ message: "Admin session closed." });
+});
+
+app.get(`${APP_BASE_PATH}/api/admin/export`, requireAdminSession, async (_req, res, next) => {
+  try {
+    const reservations = await loadReservations();
+    const exportDate = getCurrentDateInTimeZone(CLEANUP_TIMEZONE);
+    const payload = {
+      exportedAt: new Date().toISOString(),
+      timeZone: CLEANUP_TIMEZONE,
+      totalReservations: reservations.length,
+      reservations
+    };
+
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="reservations-export-${exportDate}.json"`
+    );
+    res.type("application/json");
+    res.send(JSON.stringify(payload, null, 2));
   } catch (error) {
     next(error);
   }

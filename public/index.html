@@ -79,6 +79,40 @@
         <ul id="reservations-list" class="reservations-list"></ul>
         <p id="list-message" class="message"></p>
       </section>
+
+      <section class="card admin-card">
+        <div class="section-head">
+          <h2>Admin export</h2>
+        </div>
+
+        <p class="hint">Admin can download a complete JSON export of all reservations.</p>
+
+        <form id="admin-login-form" class="admin-form">
+          <div class="grid">
+            <label>
+              Username
+              <input id="admin-username" type="text" autocomplete="username" required />
+            </label>
+
+            <label>
+              Password
+              <input id="admin-password" type="password" autocomplete="current-password" required />
+            </label>
+          </div>
+
+          <button type="submit">Admin login</button>
+        </form>
+
+        <div id="admin-actions" class="admin-actions" hidden>
+          <p class="hint">Authenticated. Download the full reservations export or close the admin session.</p>
+          <div class="admin-toolbar">
+            <button id="admin-export-btn" type="button">Download export</button>
+            <button id="admin-logout-btn" type="button" class="ghost-btn">Logout</button>
+          </div>
+        </div>
+
+        <p id="admin-message" class="message"></p>
+      </section>
     </main>
 
     <script src="/reservation/app.js" defer></script>

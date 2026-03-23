@@ -11,6 +11,13 @@ const formMessage = document.getElementById("form-message");
 const listMessage = document.getElementById("list-message");
 const reservationsList = document.getElementById("reservations-list");
 const refreshBtn = document.getElementById("refresh-btn");
+const adminLoginForm = document.getElementById("admin-login-form");
+const adminUsernameInput = document.getElementById("admin-username");
+const adminPasswordInput = document.getElementById("admin-password");
+const adminActions = document.getElementById("admin-actions");
+const adminExportBtn = document.getElementById("admin-export-btn");
+const adminLogoutBtn = document.getElementById("admin-logout-btn");
+const adminMessage = document.getElementById("admin-message");
 
 const BASE_PATH = "/reservation";
 const MAX_RESERVATION_MINUTES = 4 * 60;
@@ -25,6 +32,15 @@ function setMessage(element, text, type = "info") {
 
 function clearMessage(element) {
   setMessage(element, "", "info");
+}
+
+function setAdminAuthenticated(authenticated) {
+  adminLoginForm.hidden = authenticated;
+  adminActions.hidden = !authenticated;
+
+  if (authenticated) {
+    adminPasswordInput.value = "";
+  }
 }
 
 function toMinutes(time) {
@@ -96,6 +112,47 @@ async function apiRequest(url, options = {}) {
   }
 
   return payload;
+}
+
+function getDownloadFilename(contentDisposition, fallback) {
+  const match = /filename="([^"]+)"/i.exec(contentDisposition || "");
+  return match ? match[1] : fallback;
+}
+
+async function downloadAdminExport() {
+  const response = await fetch(`${BASE_PATH}/api/admin/export`);
+  const contentType = response.headers.get("content-type") || "";
+
+  if (!response.ok) {
+    let errorMessage = "Request failed.";
+
+    if (contentType.includes("application/json")) {
+      const payload = await response.json();
+      errorMessage = payload.error || errorMessage;
+    } else {
+      const text = await response.text();
+      if (text) {
+        errorMessage = text;
+      }
+    }
+
+    throw new Error(errorMessage);
+  }
+
+  const blob = await response.blob();
+  const downloadUrl = window.URL.createObjectURL(blob);
+  const fileName = getDownloadFilename(
+    response.headers.get("content-disposition"),
+    `reservations-export-${todayAsISO()}.json`
+  );
+  const link = document.createElement("a");
+
+  link.href = downloadUrl;
+  link.download = fileName;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  window.URL.revokeObjectURL(downloadUrl);
 }
 
 function getSpaceName(spaceId) {
@@ -280,6 +337,62 @@ async function handleReservationCancel(event) {
   }
 }
 
+async function syncAdminSession() {
+  const result = await apiRequest(`${BASE_PATH}/api/admin/session`);
+  setAdminAuthenticated(Boolean(result.authenticated));
+}
+
+async function handleAdminLogin(event) {
+  event.preventDefault();
+  clearMessage(adminMessage);
+
+  try {
+    await apiRequest(`${BASE_PATH}/api/admin/login`, {
+      method: "POST",
+      body: JSON.stringify({
+        username: adminUsernameInput.value,
+        password: adminPasswordInput.value
+      })
+    });
+
+    setAdminAuthenticated(true);
+    setMessage(adminMessage, "Admin session active.", "success");
+  } catch (error) {
+    setAdminAuthenticated(false);
+    setMessage(adminMessage, error.message, "error");
+  }
+}
+
+async function handleAdminLogout() {
+  clearMessage(adminMessage);
+
+  try {
+    await apiRequest(`${BASE_PATH}/api/admin/logout`, {
+      method: "POST"
+    });
+
+    setAdminAuthenticated(false);
+    setMessage(adminMessage, "Admin session closed.", "info");
+  } catch (error) {
+    setMessage(adminMessage, error.message, "error");
+  }
+}
+
+async function handleAdminExport() {
+  clearMessage(adminMessage);
+
+  try {
+    await downloadAdminExport();
+    setMessage(adminMessage, "Export downloaded successfully.", "success");
+  } catch (error) {
+    if (error.message === "Admin authentication required.") {
+      setAdminAuthenticated(false);
+    }
+
+    setMessage(adminMessage, error.message, "error");
+  }
+}
+
 async function bootstrap() {
   configureDateLimits();
   setMessage(listMessage, "Loading reservations...", "info");
@@ -287,15 +400,19 @@ async function bootstrap() {
   try {
     await loadSpaces();
     await loadReservations();
+    await syncAdminSession();
   } catch (error) {
     setMessage(listMessage, error.message, "error");
   }
 }
 
 bookingForm.addEventListener("submit", handleBookingSubmit);
+adminLoginForm.addEventListener("submit", handleAdminLogin);
 spaceSelect.addEventListener("change", loadReservations);
 dateInput.addEventListener("change", loadReservations);
 reservationsList.addEventListener("click", handleReservationCancel);
 refreshBtn.addEventListener("click", loadReservations);
+adminExportBtn.addEventListener("click", handleAdminExport);
+adminLogoutBtn.addEventListener("click", handleAdminLogout);
 
 bootstrap();
