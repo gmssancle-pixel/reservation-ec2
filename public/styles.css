@@ -135,6 +135,32 @@ button:disabled {
   gap: 8px;
 }
 
+.admin-card {
+  border-color: #d7dbe6;
+  background: linear-gradient(180deg, #ffffff 0%, #fbfcff 100%);
+}
+
+.admin-form,
+.admin-actions {
+  margin-top: 12px;
+}
+
+.activity-panel {
+  margin-top: 16px;
+  border-top: 1px solid var(--border);
+  padding-top: 16px;
+}
+
+.admin-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.admin-toolbar button {
+  margin-top: 0;
+}
+
 .hint {
   margin-top: 0;
   color: var(--muted);
@@ -142,6 +168,14 @@ button:disabled {
 }
 
 .reservations-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.activity-list {
   list-style: none;
   margin: 0;
   padding: 0;
@@ -160,7 +194,19 @@ button:disabled {
   background: #f9fbff;
 }
 
+.activity-item {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  background: #fffdf7;
+}
+
 .reservation-title {
+  margin: 0;
+  font-weight: 600;
+}
+
+.activity-title {
   margin: 0;
   font-weight: 600;
 }
@@ -169,6 +215,13 @@ button:disabled {
   margin: 3px 0 0;
   color: var(--muted);
   font-size: 0.9rem;
+}
+
+.activity-meta {
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+  word-break: break-word;
 }
 
 .cancel-btn {
