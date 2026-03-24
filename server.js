@@ -2,7 +2,9 @@ const express = require("express");
 const path = require("path");
 const crypto = require("crypto");
 const {
+  appendActivityLogEntry,
   initializeFileStore,
+  loadActivityLog,
   loadSpaces,
   loadReservations,
   saveReservations
@@ -12,6 +14,7 @@ const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 const APP_BASE_PATH = "/reservation";
 const PUBLIC_DIR = path.join(__dirname, "public");
+const GA4_MEASUREMENT_ID = (process.env.GA4_MEASUREMENT_ID || "").trim();
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME || "g14nm4rc0";
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "c4st3lv3tr4n0";
 const ADMIN_SESSION_COOKIE = "reservationAdminSession";
@@ -26,6 +29,7 @@ const MAX_RESERVATION_MINUTES = 4 * 60;
 const MAX_BOOKING_DAYS_AHEAD = 30;
 const DEFAULT_CLEANUP_TIMEZONE = "Europe/Rome";
 const CLEANUP_CHECK_INTERVAL_MS = 60 * 1000;
+const DEFAULT_ACTIVITY_LOG_LIMIT = 100;
 
 function resolveCleanupTimeZone(candidate) {
   try {
@@ -50,11 +54,18 @@ const CLEANUP_TIMEZONE = resolveCleanupTimeZone(
 );
 
 let mutationQueue = Promise.resolve();
+let activityLogQueue = Promise.resolve();
 let lastObservedCleanupDate = null;
 
 function withMutationLock(task) {
   const run = mutationQueue.then(task, task);
   mutationQueue = run.catch(() => undefined);
+  return run;
+}
+
+function withActivityLogLock(task) {
+  const run = activityLogQueue.then(task, task);
+  activityLogQueue = run.catch(() => undefined);
   return run;
 }
 
@@ -212,6 +223,41 @@ function hasAdminSession(req) {
   return isValidAdminSessionToken(cookies[ADMIN_SESSION_COOKIE]);
 }
 
+function getRequestIp(req) {
+  const forwardedFor = normalizeString(req.headers["x-forwarded-for"]);
+  if (forwardedFor) {
+    return forwardedFor.split(",")[0].trim();
+  }
+
+  return normalizeString(req.socket && req.socket.remoteAddress);
+}
+
+function createActivityEntry(action, status, data = {}, req) {
+  return {
+    id: crypto.randomUUID(),
+    action,
+    status,
+    actorName: normalizeString(data.actorName),
+    actorRoomNumber: normalizeString(data.actorRoomNumber),
+    sourceIp: getRequestIp(req),
+    reservationId: normalizeString(data.reservationId),
+    spaceId: normalizeString(data.spaceId),
+    reservationDate: normalizeString(data.reservationDate),
+    startTime: normalizeString(data.startTime),
+    endTime: normalizeString(data.endTime),
+    details: normalizeString(data.details),
+    createdAt: new Date().toISOString()
+  };
+}
+
+async function logActivity(action, status, data, req) {
+  try {
+    await withActivityLogLock(() => appendActivityLogEntry(createActivityEntry(action, status, data, req)));
+  } catch (error) {
+    console.error("[activity] Unable to append activity log entry:", error);
+  }
+}
+
 function setAdminSessionCookie(res) {
   res.setHeader(
     "Set-Cookie",
@@ -329,6 +375,16 @@ app.get(APP_BASE_PATH, (_req, res) => {
   res.sendFile(path.join(PUBLIC_DIR, "index.html"));
 });
 
+app.get(`${APP_BASE_PATH}/app-config.js`, (_req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  res.type("application/javascript");
+  res.send(
+    `window.RESERVATION_APP_CONFIG = ${JSON.stringify({
+      ga4MeasurementId: GA4_MEASUREMENT_ID
+    })};`
+  );
+});
+
 app.use(APP_BASE_PATH, express.static(PUBLIC_DIR));
 
 app.get(`${APP_BASE_PATH}/api/health`, (_req, res) => {
@@ -353,15 +409,26 @@ app.post(`${APP_BASE_PATH}/api/admin/login`, (req, res) => {
   const password = normalizeString(req.body && req.body.password);
 
   if (!sameSecret(username, ADMIN_USERNAME) || !sameSecret(password, ADMIN_PASSWORD)) {
+    void logActivity("admin_login", "denied", {
+      actorName: username,
+      details: "Invalid admin credentials."
+    }, req);
     return res.status(401).json({ error: "Invalid admin username or password." });
   }
 
   setAdminSessionCookie(res);
+  void logActivity("admin_login", "success", {
+    actorName: username,
+    details: "Admin session opened."
+  }, req);
   return res.json({ message: "Admin authenticated." });
 });
 
-app.post(`${APP_BASE_PATH}/api/admin/logout`, (_req, res) => {
+app.post(`${APP_BASE_PATH}/api/admin/logout`, (req, res) => {
   clearAdminSessionCookie(res);
+  void logActivity("admin_logout", "success", {
+    details: "Admin session closed."
+  }, req);
   res.json({ message: "Admin session closed." });
 });
 
@@ -382,6 +449,27 @@ app.get(`${APP_BASE_PATH}/api/admin/export`, requireAdminSession, async (_req, r
     );
     res.type("application/json");
     res.send(JSON.stringify(payload, null, 2));
+    void logActivity("admin_export", "success", {
+      details: `Exported ${reservations.length} reservation(s).`
+    }, _req);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get(`${APP_BASE_PATH}/api/admin/activity`, requireAdminSession, async (req, res, next) => {
+  try {
+    const requestedLimit = Number.parseInt(normalizeString(req.query.limit), 10);
+    const limit = Number.isInteger(requestedLimit) && requestedLimit > 0
+      ? Math.min(requestedLimit, 500)
+      : DEFAULT_ACTIVITY_LOG_LIMIT;
+    const activityLog = await loadActivityLog();
+    const items = activityLog
+      .slice()
+      .sort((first, second) => second.createdAt.localeCompare(first.createdAt))
+      .slice(0, limit);
+
+    res.json(items);
   } catch (error) {
     next(error);
   }
@@ -463,6 +551,15 @@ app.post(`${APP_BASE_PATH}/api/reservations`, async (req, res, next) => {
     }
 
     if (!isValidDate(payload.date)) {
+      void logActivity("reservation_create", "denied", {
+        actorName: payload.residentName,
+        actorRoomNumber: payload.roomNumber,
+        spaceId: payload.spaceId,
+        reservationDate: payload.date,
+        startTime: payload.startTime,
+        endTime: payload.endTime,
+        details: "Invalid date format."
+      }, req);
       return res.status(400).json({ error: "Invalid date. Use YYYY-MM-DD format." });
     }
 
@@ -473,6 +570,15 @@ app.post(`${APP_BASE_PATH}/api/reservations`, async (req, res, next) => {
     const maxBookingDateMs = toUTCDateMs(maxBookingDate);
 
     if (selectedDateMs < todayMs || selectedDateMs > maxBookingDateMs) {
+      void logActivity("reservation_create", "denied", {
+        actorName: payload.residentName,
+        actorRoomNumber: payload.roomNumber,
+        spaceId: payload.spaceId,
+        reservationDate: payload.date,
+        startTime: payload.startTime,
+        endTime: payload.endTime,
+        details: `Date outside allowed range ${today} - ${maxBookingDate}.`
+      }, req);
       return res.status(400).json({
         error: `Date must be between ${today} and ${maxBookingDate}.`
       });
@@ -528,6 +634,15 @@ app.post(`${APP_BASE_PATH}/api/reservations`, async (req, res, next) => {
       if (hasOverlap) {
         const overlapError = new Error("The selected time slot is already booked.");
         overlapError.status = 409;
+        void logActivity("reservation_create", "denied", {
+          actorName: payload.residentName,
+          actorRoomNumber: payload.roomNumber,
+          spaceId: payload.spaceId,
+          reservationDate: payload.date,
+          startTime: payload.startTime,
+          endTime: payload.endTime,
+          details: "Selected time slot already booked."
+        }, req);
         throw overlapError;
       }
 
@@ -546,6 +661,16 @@ app.post(`${APP_BASE_PATH}/api/reservations`, async (req, res, next) => {
 
       reservations.push(created);
       await saveReservations(reservations);
+      await logActivity("reservation_create", "success", {
+        actorName: created.residentName,
+        actorRoomNumber: created.roomNumber,
+        reservationId: created.id,
+        spaceId: created.spaceId,
+        reservationDate: created.date,
+        startTime: created.startTime,
+        endTime: created.endTime,
+        details: "Reservation created."
+      }, req);
       return created;
     });
 
@@ -592,6 +717,12 @@ app.delete(`${APP_BASE_PATH}/api/reservations/:id`, async (req, res, next) => {
       if (index < 0) {
         const notFound = new Error("Reservation not found.");
         notFound.status = 404;
+        void logActivity("reservation_cancel", "denied", {
+          actorName: residentName,
+          actorRoomNumber: roomNumber,
+          reservationId,
+          details: "Reservation not found."
+        }, req);
         throw notFound;
       }
 
@@ -600,17 +731,47 @@ app.delete(`${APP_BASE_PATH}/api/reservations/:id`, async (req, res, next) => {
       if (reservation.cancellationPinHash !== hashText(cancellationPin)) {
         const unauthorized = new Error("Wrong cancellation PIN.");
         unauthorized.status = 401;
+        void logActivity("reservation_cancel", "denied", {
+          actorName: residentName,
+          actorRoomNumber: roomNumber,
+          reservationId,
+          spaceId: reservation.spaceId,
+          reservationDate: reservation.date,
+          startTime: reservation.startTime,
+          endTime: reservation.endTime,
+          details: "Wrong cancellation PIN."
+        }, req);
         throw unauthorized;
       }
 
       if (!sameText(reservation.roomNumber, roomNumber) || !sameText(reservation.residentName, residentName)) {
         const forbidden = new Error("Only the reservation owner can cancel this booking.");
         forbidden.status = 403;
+        void logActivity("reservation_cancel", "denied", {
+          actorName: residentName,
+          actorRoomNumber: roomNumber,
+          reservationId,
+          spaceId: reservation.spaceId,
+          reservationDate: reservation.date,
+          startTime: reservation.startTime,
+          endTime: reservation.endTime,
+          details: "Cancellation attempted by non-owner."
+        }, req);
         throw forbidden;
       }
 
       reservations.splice(index, 1);
       await saveReservations(reservations);
+      await logActivity("reservation_cancel", "success", {
+        actorName: reservation.residentName,
+        actorRoomNumber: reservation.roomNumber,
+        reservationId: reservation.id,
+        spaceId: reservation.spaceId,
+        reservationDate: reservation.date,
+        startTime: reservation.startTime,
+        endTime: reservation.endTime,
+        details: "Reservation cancelled."
+      }, req);
       return reservation;
     });
 

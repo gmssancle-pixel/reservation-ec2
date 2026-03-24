@@ -16,14 +16,22 @@ const adminUsernameInput = document.getElementById("admin-username");
 const adminPasswordInput = document.getElementById("admin-password");
 const adminActions = document.getElementById("admin-actions");
 const adminExportBtn = document.getElementById("admin-export-btn");
+const adminActivityRefreshBtn = document.getElementById("admin-activity-refresh-btn");
 const adminLogoutBtn = document.getElementById("admin-logout-btn");
 const adminMessage = document.getElementById("admin-message");
+const adminActivityList = document.getElementById("admin-activity-list");
+const adminActivityMessage = document.getElementById("admin-activity-message");
 
 const BASE_PATH = "/reservation";
 const MAX_RESERVATION_MINUTES = 4 * 60;
 const MAX_BOOKING_DAYS_AHEAD = 30;
 const PIN_PATTERN = /^\d{4,8}$/;
+const APP_CONFIG = window.RESERVATION_APP_CONFIG || {};
+const GA4_MEASUREMENT_ID = typeof APP_CONFIG.ga4MeasurementId === "string"
+  ? APP_CONFIG.ga4MeasurementId.trim()
+  : "";
 let spaces = [];
+let ga4InitPromise = null;
 
 function setMessage(element, text, type = "info") {
   element.textContent = text;
@@ -34,13 +42,72 @@ function clearMessage(element) {
   setMessage(element, "", "info");
 }
 
+function isGa4Enabled() {
+  return /^G-[A-Z0-9]+$/i.test(GA4_MEASUREMENT_ID);
+}
+
+function ensureGa4() {
+  if (!isGa4Enabled()) {
+    return Promise.resolve(false);
+  }
+
+  if (window.gtag) {
+    return Promise.resolve(true);
+  }
+
+  if (ga4InitPromise) {
+    return ga4InitPromise;
+  }
+
+  ga4InitPromise = new Promise((resolve, reject) => {
+    window.dataLayer = window.dataLayer || [];
+    window.gtag = function gtag() {
+      window.dataLayer.push(arguments);
+    };
+
+    window.gtag("js", new Date());
+    window.gtag("config", GA4_MEASUREMENT_ID, {
+      anonymize_ip: true
+    });
+
+    const script = document.createElement("script");
+    script.async = true;
+    script.src = `https://www.googletagmanager.com/gtag/js?id=${encodeURIComponent(GA4_MEASUREMENT_ID)}`;
+    script.onload = () => resolve(true);
+    script.onerror = () => reject(new Error("Unable to load Google Analytics."));
+    document.head.append(script);
+  }).catch((error) => {
+    console.error(error);
+    return false;
+  });
+
+  return ga4InitPromise;
+}
+
+async function trackAnalyticsEvent(eventName, parameters = {}) {
+  if (!isGa4Enabled()) {
+    return;
+  }
+
+  const ready = await ensureGa4();
+  if (!ready || !window.gtag) {
+    return;
+  }
+
+  window.gtag("event", eventName, parameters);
+}
+
 function setAdminAuthenticated(authenticated) {
   adminLoginForm.hidden = authenticated;
   adminActions.hidden = !authenticated;
 
   if (authenticated) {
     adminPasswordInput.value = "";
+    return;
   }
+
+  adminActivityList.innerHTML = "";
+  clearMessage(adminActivityMessage);
 }
 
 function toMinutes(time) {
@@ -86,6 +153,11 @@ function configureDateLimits() {
   }
 }
 
+function getLeadDays(targetDate) {
+  const diffMs = toUTCDateMs(targetDate) - toUTCDateMs(todayAsISO());
+  return Number.isFinite(diffMs) ? Math.round(diffMs / (24 * 60 * 60 * 1000)) : undefined;
+}
+
 async function apiRequest(url, options = {}) {
   const config = {
     ...options,
@@ -117,6 +189,90 @@ async function apiRequest(url, options = {}) {
 function getDownloadFilename(contentDisposition, fallback) {
   const match = /filename="([^"]+)"/i.exec(contentDisposition || "");
   return match ? match[1] : fallback;
+}
+
+function formatDateTime(dateValue) {
+  const parsedDate = new Date(dateValue);
+  if (Number.isNaN(parsedDate.getTime())) {
+    return dateValue;
+  }
+
+  return parsedDate.toLocaleString("en-GB", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit"
+  });
+}
+
+function formatActivityAction(item) {
+  if (item.action === "reservation_create") {
+    return item.status === "success" ? "Reservation created" : "Reservation denied";
+  }
+
+  if (item.action === "reservation_cancel") {
+    return item.status === "success" ? "Reservation cancelled" : "Cancellation denied";
+  }
+
+  if (item.action === "admin_login") {
+    return item.status === "success" ? "Admin login" : "Admin login denied";
+  }
+
+  if (item.action === "admin_logout") {
+    return "Admin logout";
+  }
+
+  if (item.action === "admin_export") {
+    return "Admin export";
+  }
+
+  return item.action;
+}
+
+function renderActivityLog(items) {
+  adminActivityList.innerHTML = "";
+
+  if (items.length === 0) {
+    setMessage(adminActivityMessage, "No activity found yet.", "info");
+    return;
+  }
+
+  clearMessage(adminActivityMessage);
+
+  items.forEach((item) => {
+    const listItem = document.createElement("li");
+    listItem.className = "activity-item";
+
+    const title = document.createElement("p");
+    title.className = "activity-title";
+    title.textContent = `${formatActivityAction(item)} (${item.status})`;
+
+    const actor = document.createElement("p");
+    actor.className = "activity-meta";
+    actor.textContent = item.actorName
+      ? `${item.actorName}${item.actorRoomNumber ? ` | Room ${item.actorRoomNumber}` : ""}`
+      : "No user identity captured";
+
+    const reservation = document.createElement("p");
+    reservation.className = "activity-meta";
+    reservation.textContent = [
+      item.spaceId ? `Space: ${getSpaceName(item.spaceId)}` : "",
+      item.reservationDate ? `Date: ${item.reservationDate}` : "",
+      item.startTime && item.endTime ? `Time: ${item.startTime}/${item.endTime}` : ""
+    ].filter(Boolean).join(" | ");
+
+    const details = document.createElement("p");
+    details.className = "activity-meta";
+    details.textContent = [
+      item.details,
+      item.sourceIp ? `IP: ${item.sourceIp}` : "",
+      `At: ${formatDateTime(item.createdAt)}`
+    ].filter(Boolean).join(" | ");
+
+    listItem.append(title, actor, reservation, details);
+    adminActivityList.append(listItem);
+  });
 }
 
 async function downloadAdminExport() {
@@ -226,6 +382,12 @@ async function loadReservations() {
   renderReservations(reservations);
 }
 
+async function loadAdminActivity() {
+  setMessage(adminActivityMessage, "Loading activity...", "info");
+  const items = await apiRequest(`${BASE_PATH}/api/admin/activity?limit=100`);
+  renderActivityLog(items);
+}
+
 async function handleBookingSubmit(event) {
   event.preventDefault();
   clearMessage(formMessage);
@@ -275,6 +437,12 @@ async function handleBookingSubmit(event) {
       body: JSON.stringify(payload)
     });
 
+    void trackAnalyticsEvent("reservation_created", {
+      space_id: payload.spaceId,
+      lead_days: getLeadDays(payload.date),
+      duration_minutes: endMinutes - startMinutes
+    });
+
     setMessage(
       formMessage,
       `Reservation confirmed. ID: ${result.reservation.id}. Keep your cancellation PIN safe.`,
@@ -288,6 +456,13 @@ async function handleBookingSubmit(event) {
 
     await loadReservations();
   } catch (error) {
+    if (error.message === "The selected time slot is already booked.") {
+      void trackAnalyticsEvent("reservation_conflict", {
+        space_id: payload.spaceId,
+        lead_days: getLeadDays(payload.date)
+      });
+    }
+
     setMessage(formMessage, error.message, "error");
   }
 }
@@ -330,6 +505,8 @@ async function handleReservationCancel(event) {
       })
     });
 
+    void trackAnalyticsEvent("reservation_cancelled");
+
     setMessage(formMessage, "Reservation deleted successfully.", "success");
     await loadReservations();
   } catch (error) {
@@ -340,6 +517,10 @@ async function handleReservationCancel(event) {
 async function syncAdminSession() {
   const result = await apiRequest(`${BASE_PATH}/api/admin/session`);
   setAdminAuthenticated(Boolean(result.authenticated));
+
+  if (result.authenticated) {
+    await loadAdminActivity();
+  }
 }
 
 async function handleAdminLogin(event) {
@@ -356,6 +537,7 @@ async function handleAdminLogin(event) {
     });
 
     setAdminAuthenticated(true);
+    await loadAdminActivity();
     setMessage(adminMessage, "Admin session active.", "success");
   } catch (error) {
     setAdminAuthenticated(false);
@@ -393,9 +575,24 @@ async function handleAdminExport() {
   }
 }
 
+async function handleAdminActivityRefresh() {
+  clearMessage(adminMessage);
+
+  try {
+    await loadAdminActivity();
+  } catch (error) {
+    if (error.message === "Admin authentication required.") {
+      setAdminAuthenticated(false);
+    }
+
+    setMessage(adminActivityMessage, error.message, "error");
+  }
+}
+
 async function bootstrap() {
   configureDateLimits();
   setMessage(listMessage, "Loading reservations...", "info");
+  void ensureGa4();
 
   try {
     await loadSpaces();
@@ -413,6 +610,7 @@ dateInput.addEventListener("change", loadReservations);
 reservationsList.addEventListener("click", handleReservationCancel);
 refreshBtn.addEventListener("click", loadReservations);
 adminExportBtn.addEventListener("click", handleAdminExport);
+adminActivityRefreshBtn.addEventListener("click", handleAdminActivityRefresh);
 adminLogoutBtn.addEventListener("click", handleAdminLogout);
 
 bootstrap();

@@ -15,6 +15,7 @@ Complete web app to manage shared-space reservations in a residence.
 - reservation cancellation restricted to owner (cancellation PIN + room number + full name)
 - local JSON persistence (no database required)
 - automatic daily cleanup at midnight (removes reservations from previous dates)
+- admin activity log showing who created, cancelled or attempted actions
 
 ## Requirements
 
@@ -37,6 +38,7 @@ Data is stored locally in:
 
 - `data/spaces.json`
 - `data/reservations.json`
+- `data/activity-log.json`
 
 No `DATABASE_URL` is needed.
 
@@ -45,6 +47,21 @@ Midnight cleanup:
 - at day rollover, all reservations with `date < today` are deleted automatically
 - default timezone: `Europe/Rome`
 - optional env var: `APP_TIMEZONE` (example: `APP_TIMEZONE=Europe/Rome`)
+
+## Google Analytics 4
+
+Optional env var:
+
+- `GA4_MEASUREMENT_ID=G-XXXXXXXXXX`
+
+If configured, the app loads GA4 and tracks:
+
+- page views
+- `reservation_created`
+- `reservation_conflict`
+- `reservation_cancelled`
+
+Tracked event params are limited to non-personal data such as space id, lead days and duration.
 
 ## AWS Amplify Hosting setup (Express / web compute)
 
@@ -75,6 +92,7 @@ Important:
 ## Main API routes
 
 - `GET /reservation/api/spaces`
+- `GET /reservation/api/admin/activity`
 - `GET /reservation/api/reservations?activeOnly=true`
 - `POST /reservation/api/reservations`
   - requires `cancellationPin` (4-8 digits)

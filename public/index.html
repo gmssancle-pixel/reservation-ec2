@@ -107,7 +107,17 @@
           <p class="hint">Authenticated. Download the full reservations export or close the admin session.</p>
           <div class="admin-toolbar">
             <button id="admin-export-btn" type="button">Download export</button>
+            <button id="admin-activity-refresh-btn" type="button" class="ghost-btn">Refresh activity</button>
             <button id="admin-logout-btn" type="button" class="ghost-btn">Logout</button>
+          </div>
+
+          <div class="activity-panel">
+            <div class="section-head">
+              <h3>Activity log</h3>
+            </div>
+            <p class="hint">Recent actions performed by users and admin on the reservation system.</p>
+            <ul id="admin-activity-list" class="activity-list"></ul>
+            <p id="admin-activity-message" class="message"></p>
           </div>
         </div>
 
@@ -115,6 +125,7 @@
       </section>
     </main>
 
+    <script src="/reservation/app-config.js"></script>
     <script src="/reservation/app.js" defer></script>
   </body>
 </html>
