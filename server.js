@@ -7,6 +7,7 @@ const {
   loadActivityLog,
   loadSpaces,
   loadReservations,
+  saveActivityLog,
   saveReservations
 } = require("./lib/file-store");
 
@@ -299,6 +300,21 @@ function getCurrentDateInTimeZone(timeZone) {
   }).format(new Date());
 }
 
+function getDateForTimestampInTimeZone(timestamp, timeZone) {
+  const date = new Date(timestamp);
+
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).format(date);
+}
+
 function addDaysToISODate(dateValue, daysToAdd) {
   const [year, month, day] = dateValue.split("-").map(Number);
   const date = new Date(Date.UTC(year, month - 1, day));
@@ -335,6 +351,23 @@ async function cleanupReservationsBefore(dateThreshold) {
   });
 }
 
+async function cleanupActivityLogBefore(dateThreshold) {
+  return withActivityLogLock(async () => {
+    const activityLog = await loadActivityLog();
+    const filteredEntries = activityLog.filter((entry) => {
+      const entryDate = getDateForTimestampInTimeZone(entry.createdAt, CLEANUP_TIMEZONE);
+      return entryDate && entryDate >= dateThreshold;
+    });
+    const removedCount = activityLog.length - filteredEntries.length;
+
+    if (removedCount > 0) {
+      await saveActivityLog(filteredEntries);
+    }
+
+    return removedCount;
+  });
+}
+
 function startDailyCleanupScheduler() {
   setInterval(async () => {
     try {
@@ -344,10 +377,12 @@ function startDailyCleanupScheduler() {
       }
 
       lastObservedCleanupDate = today;
-      const removedCount = await cleanupReservationsBefore(today);
+      const removedReservations = await cleanupReservationsBefore(today);
+      const removedActivityEntries = await cleanupActivityLogBefore(today);
       console.log(
         `[cleanup] Day rollover (${CLEANUP_TIMEZONE}). `
-        + `Removed ${removedCount} reservation(s) older than ${today}.`
+        + `Removed ${removedReservations} reservation(s) and `
+        + `${removedActivityEntries} activity log entry/entries older than ${today}.`
       );
     } catch (error) {
       console.error("[cleanup] Scheduled cleanup failed:", error);
@@ -452,6 +487,31 @@ app.get(`${APP_BASE_PATH}/api/admin/export`, requireAdminSession, async (_req, r
     void logActivity("admin_export", "success", {
       details: `Exported ${reservations.length} reservation(s).`
     }, _req);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get(`${APP_BASE_PATH}/api/admin/activity/export`, requireAdminSession, async (req, res, next) => {
+  try {
+    const activityLog = await loadActivityLog();
+    const exportDate = getCurrentDateInTimeZone(CLEANUP_TIMEZONE);
+    const payload = {
+      exportedAt: new Date().toISOString(),
+      timeZone: CLEANUP_TIMEZONE,
+      totalEntries: activityLog.length,
+      activityLog
+    };
+
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="activity-log-export-${exportDate}.json"`
+    );
+    res.type("application/json");
+    res.send(JSON.stringify(payload, null, 2));
+    void logActivity("admin_activity_export", "success", {
+      details: `Exported ${activityLog.length} activity log entr${activityLog.length === 1 ? "y" : "ies"}.`
+    }, req);
   } catch (error) {
     next(error);
   }
@@ -796,10 +856,12 @@ initializeFileStore()
   .then(async () => {
     const today = getCurrentDateInTimeZone(CLEANUP_TIMEZONE);
     lastObservedCleanupDate = today;
-    const removedCount = await cleanupReservationsBefore(today);
+    const removedReservations = await cleanupReservationsBefore(today);
+    const removedActivityEntries = await cleanupActivityLogBefore(today);
     console.log(
       `[cleanup] Startup cleanup (${CLEANUP_TIMEZONE}). `
-      + `Removed ${removedCount} reservation(s) older than ${today}.`
+      + `Removed ${removedReservations} reservation(s) and `
+      + `${removedActivityEntries} activity log entry/entries older than ${today}.`
     );
 
     app.listen(PORT, () => {

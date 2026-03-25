@@ -16,6 +16,7 @@ Complete web app to manage shared-space reservations in a residence.
 - local JSON persistence (no database required)
 - automatic daily cleanup at midnight (removes reservations from previous dates)
 - admin activity log showing who created, cancelled or attempted actions
+- activity log daily cleanup at midnight (removes entries from previous dates)
 
 ## Requirements
 
@@ -45,6 +46,7 @@ No `DATABASE_URL` is needed.
 Midnight cleanup:
 
 - at day rollover, all reservations with `date < today` are deleted automatically
+- at day rollover, all activity log entries created before today are deleted automatically
 - default timezone: `Europe/Rome`
 - optional env var: `APP_TIMEZONE` (example: `APP_TIMEZONE=Europe/Rome`)
 
@@ -93,6 +95,7 @@ Important:
 
 - `GET /reservation/api/spaces`
 - `GET /reservation/api/admin/activity`
+- `GET /reservation/api/admin/activity/export`
 - `GET /reservation/api/reservations?activeOnly=true`
 - `POST /reservation/api/reservations`
   - requires `cancellationPin` (4-8 digits)

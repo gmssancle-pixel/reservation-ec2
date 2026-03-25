@@ -16,6 +16,7 @@ const adminUsernameInput = document.getElementById("admin-username");
 const adminPasswordInput = document.getElementById("admin-password");
 const adminActions = document.getElementById("admin-actions");
 const adminExportBtn = document.getElementById("admin-export-btn");
+const adminActivityExportBtn = document.getElementById("admin-activity-export-btn");
 const adminActivityRefreshBtn = document.getElementById("admin-activity-refresh-btn");
 const adminLogoutBtn = document.getElementById("admin-logout-btn");
 const adminMessage = document.getElementById("admin-message");
@@ -227,6 +228,10 @@ function formatActivityAction(item) {
     return "Admin export";
   }
 
+  if (item.action === "admin_activity_export") {
+    return "Admin activity export";
+  }
+
   return item.action;
 }
 
@@ -275,8 +280,8 @@ function renderActivityLog(items) {
   });
 }
 
-async function downloadAdminExport() {
-  const response = await fetch(`${BASE_PATH}/api/admin/export`);
+async function downloadAdminFile(endpoint, fallbackName) {
+  const response = await fetch(endpoint);
   const contentType = response.headers.get("content-type") || "";
 
   if (!response.ok) {
@@ -299,7 +304,7 @@ async function downloadAdminExport() {
   const downloadUrl = window.URL.createObjectURL(blob);
   const fileName = getDownloadFilename(
     response.headers.get("content-disposition"),
-    `reservations-export-${todayAsISO()}.json`
+    fallbackName
   );
   const link = document.createElement("a");
 
@@ -564,8 +569,29 @@ async function handleAdminExport() {
   clearMessage(adminMessage);
 
   try {
-    await downloadAdminExport();
+    await downloadAdminFile(
+      `${BASE_PATH}/api/admin/export`,
+      `reservations-export-${todayAsISO()}.json`
+    );
     setMessage(adminMessage, "Export downloaded successfully.", "success");
+  } catch (error) {
+    if (error.message === "Admin authentication required.") {
+      setAdminAuthenticated(false);
+    }
+
+    setMessage(adminMessage, error.message, "error");
+  }
+}
+
+async function handleAdminActivityExport() {
+  clearMessage(adminMessage);
+
+  try {
+    await downloadAdminFile(
+      `${BASE_PATH}/api/admin/activity/export`,
+      `activity-log-export-${todayAsISO()}.json`
+    );
+    setMessage(adminMessage, "Activity log downloaded successfully.", "success");
   } catch (error) {
     if (error.message === "Admin authentication required.") {
       setAdminAuthenticated(false);
@@ -610,6 +636,7 @@ dateInput.addEventListener("change", loadReservations);
 reservationsList.addEventListener("click", handleReservationCancel);
 refreshBtn.addEventListener("click", loadReservations);
 adminExportBtn.addEventListener("click", handleAdminExport);
+adminActivityExportBtn.addEventListener("click", handleAdminActivityExport);
 adminActivityRefreshBtn.addEventListener("click", handleAdminActivityRefresh);
 adminLogoutBtn.addEventListener("click", handleAdminLogout);
 
